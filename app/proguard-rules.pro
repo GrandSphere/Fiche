@@ -1,0 +1,4 @@
+-keep class com.grandsphere.fiche.data.** { *; }
+-keep class com.grandsphere.fiche.data.remote.** { *; }
+-dontwarn okhttp3.**
+-dontwarn retrofit2.**
