@@ -1,14 +1,17 @@
 package com.grandsphere.fiche.ui
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Block
@@ -16,6 +19,7 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -36,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -45,8 +50,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.grandsphere.fiche.FicheApplication
 import com.grandsphere.fiche.domain.model.MediaType
 import com.grandsphere.fiche.ui.about.AboutScreen
+import com.grandsphere.fiche.ui.catalogupdate.CatalogUpdateDialog
+import com.grandsphere.fiche.ui.catalogupdate.CatalogUpdateViewModel
 import com.grandsphere.fiche.ui.chrome.MediaTypeTabs
 import com.grandsphere.fiche.ui.components.FicheSnackbarHost
 import com.grandsphere.fiche.ui.components.ShareImportDialog
@@ -61,12 +69,16 @@ import com.grandsphere.fiche.ui.overview.OverviewScreen
 import com.grandsphere.fiche.ui.search.AddSearchScreen
 import com.grandsphere.fiche.ui.settings.SettingsScreen
 import com.grandsphere.fiche.ui.suggestions.SuggestionsScreen
+import kotlin.system.exitProcess
 import kotlinx.coroutines.launch
 
 private data class DrawerDest(val route: String, val label: String, val icon: ImageVector)
 
 @Composable
-fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
+fun FicheRoot(
+    session: SessionViewModel = hiltViewModel(),
+    catalogUpdates: CatalogUpdateViewModel = hiltViewModel()
+) {
     val nav = rememberNavController()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -76,6 +88,7 @@ fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
     val pendingShareImport by session.shareImport.pending.collectAsStateWithLifecycle()
     val current = nav.currentBackStackEntryAsState().value?.destination?.route
     val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
 
     fun openDrawer() = scope.launch { drawerState.open() }
     fun closeDrawer() = scope.launch { drawerState.close() }
@@ -88,6 +101,12 @@ fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
 
     LaunchedEffect(Unit) {
         session.importMessage.collect { message ->
+            snackbar.showSnackbar(message)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        catalogUpdates.message.collect { message ->
             snackbar.showSnackbar(message)
         }
     }
@@ -122,7 +141,11 @@ fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
-                ModalDrawerSheet {
+                ModalDrawerSheet(
+                    drawerContainerColor = MaterialTheme.colorScheme.background,
+                    drawerTonalElevation = 0.dp
+                ) {
+                    Column(Modifier.fillMaxSize()) {
                     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp)) {
                         Text("Fiche", style = MaterialTheme.typography.headlineSmall)
                     }
@@ -158,9 +181,43 @@ fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
 
                     libraryItems.forEach { it.item() }
                     HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                    discoveryItems.forEach { it.item() }
+                    discoveryItems.take(2).forEach { it.item() }
+                    NavigationDrawerItem(
+                        label = { Text(mediaType.checkUpdatesLabel) },
+                        selected = false,
+                        icon = { Icon(Icons.Default.NewReleases, null) },
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 1.dp)
+                            .heightIn(max = 44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = NavigationDrawerItemDefaults.colors(),
+                        onClick = {
+                            closeDrawer()
+                            catalogUpdates.start(mediaType)
+                        }
+                    )
+                    discoveryItems.drop(2).forEach { it.item() }
                     HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                     appItems.forEach { it.item() }
+                    Spacer(Modifier.weight(1f))
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                    NavigationDrawerItem(
+                        label = { Text("Quit") },
+                        selected = false,
+                        icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, null) },
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 1.dp)
+                            .padding(bottom = 8.dp)
+                            .heightIn(max = 44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = NavigationDrawerItemDefaults.colors(),
+                        onClick = {
+                            (context.applicationContext as FicheApplication).shutdown()
+                            (context as? Activity)?.finishAndRemoveTask()
+                            exitProcess(0)
+                        }
+                    )
+                    }
                 }
             }
         ) {
@@ -263,6 +320,7 @@ fun FicheRoot(session: SessionViewModel = hiltViewModel()) {
                 }
             }
         }
+        CatalogUpdateDialog(catalogUpdates)
         FicheSnackbarHost(
             hostState = snackbar,
             modifier = Modifier.align(Alignment.TopCenter)

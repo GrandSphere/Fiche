@@ -9,8 +9,10 @@ import com.grandsphere.fiche.data.catalog.matchesDiscover
 import com.grandsphere.fiche.data.catalog.paginateClient
 import com.grandsphere.fiche.data.catalog.toRemoteTitle
 import com.grandsphere.fiche.data.catalog.series.discoverTvMaze
+import com.grandsphere.fiche.data.catalog.series.tmdbSeasonCounts
 import com.grandsphere.fiche.data.catalog.series.tmdbSeasonsAndEpisodes
 import com.grandsphere.fiche.data.catalog.series.tvMazeFranchiseRelated
+import com.grandsphere.fiche.data.catalog.series.tvMazeSeasonCounts
 import com.grandsphere.fiche.data.catalog.series.tvMazeSeasonsAndEpisodes
 import com.grandsphere.fiche.data.prefs.ApiKeyRepository
 import com.grandsphere.fiche.data.prefs.UserPreferencesRepository
@@ -38,6 +40,9 @@ interface AnimeCatalog : MediaCatalogProvider {
         remoteId: String,
         fallbackRuntime: Int = 45
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>>
+
+    /** Season numbers and episode counts only — no per-episode payloads. */
+    suspend fun seasonCounts(remoteId: String): List<RemoteSeason>
 
     suspend fun discover(
         filter: DiscoverFilter,
@@ -73,6 +78,9 @@ class TvMazeAnimeCatalog(
         fallbackRuntime: Int
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>> =
         tvMazeSeasonsAndEpisodes(tvMaze, remoteId, fallbackRuntime)
+
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> =
+        tvMazeSeasonCounts(tvMaze, remoteId)
 
     override suspend fun discover(
         filter: DiscoverFilter,
@@ -131,6 +139,11 @@ class TmdbAnimeCatalog(
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>> {
         val key = requireTmdbKey()
         return tmdbSeasonsAndEpisodes(tmdb, key, remoteId, fallbackRuntime)
+    }
+
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> {
+        val key = requireTmdbKey()
+        return tmdbSeasonCounts(tmdb, key, remoteId)
     }
 
     override suspend fun discover(
@@ -274,6 +287,20 @@ class JikanAnimeCatalog(
         return seasons to episodes
     }
 
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> {
+        val anime = runCatching { jikan.animeFull(remoteId).data }.getOrNull() ?: return emptyList()
+        val count = anime.episodes ?: 0
+        if (count <= 0) return emptyList()
+        return listOf(
+            RemoteSeason(
+                seasonNumber = 1,
+                episodeCount = count,
+                startDate = anime.aired?.from?.take(10),
+                endDate = anime.aired?.to?.take(10)
+            )
+        )
+    }
+
     override suspend fun discover(
         filter: DiscoverFilter,
         page: Int,
@@ -391,6 +418,20 @@ class MalAnimeCatalog(
             )
         )
         return seasons to episodes
+    }
+
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> {
+        val anime = runCatching { mal.anime(clientId(), remoteId) }.getOrNull() ?: return emptyList()
+        val count = anime.num_episodes ?: 0
+        if (count <= 0) return emptyList()
+        return listOf(
+            RemoteSeason(
+                seasonNumber = 1,
+                episodeCount = count,
+                startDate = anime.start_date?.take(10),
+                endDate = anime.end_date?.take(10)
+            )
+        )
     }
 
     override suspend fun discover(

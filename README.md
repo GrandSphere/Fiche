@@ -65,6 +65,9 @@ Copyright © 2025 Grand Sphere Studios
    The APK is written to `app/build/outputs/apk/debug/Fiche-(version)-debug.apk`.
 
    Release builds (`./gradlew assembleRelease`) require a `keystore.properties` file in the repository root.
+3. See Json-helpers if intending to write script for import.
+- [Json-helper](Json-helper.md): Is the preferred method, used to import without ratings and completion.
+- [Json-helper-extended.md](Json-helper-extended.md):Import with ratings and completion.
 
 ### Debug on emulator
 

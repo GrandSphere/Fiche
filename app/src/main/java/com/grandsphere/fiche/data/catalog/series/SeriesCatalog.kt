@@ -30,6 +30,9 @@ interface SeriesCatalog : MediaCatalogProvider {
         fallbackRuntime: Int = 45
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>>
 
+    /** Season numbers and episode counts only — no per-episode payloads. */
+    suspend fun seasonCounts(remoteId: String): List<RemoteSeason>
+
     suspend fun discover(
         filter: DiscoverFilter,
         page: Int = 0,
@@ -64,6 +67,9 @@ class TvMazeSeriesCatalog(
         fallbackRuntime: Int
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>> =
         tvMazeSeasonsAndEpisodes(tvMaze, remoteId, fallbackRuntime)
+
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> =
+        tvMazeSeasonCounts(tvMaze, remoteId)
 
     override suspend fun discover(
         filter: DiscoverFilter,
@@ -126,6 +132,11 @@ class TmdbSeriesCatalog(
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>> {
         val key = requireTmdbKey()
         return tmdbSeasonsAndEpisodes(tmdb, key, remoteId, fallbackRuntime)
+    }
+
+    override suspend fun seasonCounts(remoteId: String): List<RemoteSeason> {
+        val key = requireTmdbKey()
+        return tmdbSeasonCounts(tmdb, key, remoteId)
     }
 
     override suspend fun discover(
@@ -198,6 +209,39 @@ class TmdbSeriesCatalog(
 
     private suspend fun requireTmdbKey(): String =
         apiKeys.require("TMDB", "TMDB")
+}
+
+internal suspend fun tvMazeSeasonCounts(
+    tvMaze: TvMazeApi,
+    remoteId: String
+): List<RemoteSeason> =
+    tvMaze.seasons(remoteId)
+        .filter { (it.number ?: 0) > 0 }
+        .map {
+            RemoteSeason(
+                seasonNumber = it.number ?: 0,
+                episodeCount = it.episodeOrder ?: 0,
+                startDate = it.premiereDate,
+                endDate = it.endDate
+            )
+        }
+
+internal suspend fun tmdbSeasonCounts(
+    tmdb: TmdbApi,
+    apiKey: String,
+    remoteId: String
+): List<RemoteSeason> {
+    val detail = tmdb.tv(remoteId, apiKey)
+    return detail.seasons.orEmpty().mapNotNull { season ->
+        val number = season.season_number ?: return@mapNotNull null
+        if (number <= 0) return@mapNotNull null
+        RemoteSeason(
+            seasonNumber = number,
+            episodeCount = season.episode_count ?: 0,
+            startDate = season.air_date,
+            endDate = null
+        )
+    }
 }
 
 internal suspend fun tvMazeSeasonsAndEpisodes(

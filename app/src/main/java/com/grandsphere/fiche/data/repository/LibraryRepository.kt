@@ -35,6 +35,7 @@ import com.grandsphere.fiche.data.local.entity.SeasonEntity
 import com.grandsphere.fiche.data.local.entity.TitleEntity
 import com.grandsphere.fiche.data.local.entity.WatchlistEntity
 import com.grandsphere.fiche.data.prefs.UserPreferencesRepository
+import com.grandsphere.fiche.data.remote.RemoteDlc
 import com.grandsphere.fiche.data.remote.RemoteRelated
 import com.grandsphere.fiche.data.remote.RemoteTitle
 import com.grandsphere.fiche.data.work.EnrichTitleWorker
@@ -317,6 +318,324 @@ class LibraryRepository @Inject constructor(
             runCatching { enrichTitle(title.id) }
         }
         return pending.size
+    }
+
+    suspend fun probeCatalogUpdates(
+        type: MediaType,
+        onProgress: ((RefreshProgress) -> Unit)? = null
+    ): List<CatalogUpdateHit> {
+        if (type == MediaType.MOVIE && !prefs.autoStoreSequels.first()) return emptyList()
+        val list = titles.getAll().filter {
+            it.mediaType == type.name && !it.hidden && it.busyLoading == 0
+        }
+        if (list.isEmpty()) return emptyList()
+        val movieIds = if (type == MediaType.MOVIE) {
+            titles.getAll().filter { it.mediaType == MediaType.MOVIE.name }.map { it.remoteId }.toSet()
+        } else {
+            emptySet()
+        }
+        val bookIds = if (type == MediaType.BOOK) {
+            titles.getAll().filter { it.mediaType == MediaType.BOOK.name }.map { it.remoteId }.toSet()
+        } else {
+            emptySet()
+        }
+        val seenCollections = mutableSetOf<String>()
+        val hits = ArrayList<CatalogUpdateHit>()
+        list.forEachIndexed { index, title ->
+            onProgress?.invoke(RefreshProgress(index + 1, list.size, "Checking"))
+            val hit = runCatching {
+                when (type) {
+                    MediaType.SERIES, MediaType.ANIME -> probeEpisodeGrowth(title, type)
+                    MediaType.MOVIE -> probeMovieSequels(title, movieIds, seenCollections)
+                    MediaType.GAME -> probeNewDlcs(title)
+                    MediaType.BOOK -> probeBookSequels(title, bookIds)
+                }
+            }.getOrNull()
+            if (hit != null) hits += hit
+            delay(80)
+        }
+        return hits
+    }
+
+    suspend fun applyCatalogUpdates(
+        type: MediaType,
+        hits: List<CatalogUpdateHit>,
+        onProgress: ((RefreshProgress) -> Unit)? = null
+    ): Int {
+        var updated = 0
+        hits.forEachIndexed { index, hit ->
+            onProgress?.invoke(RefreshProgress(index + 1, hits.size, "Updating"))
+            runCatching {
+                when (val payload = hit.payload) {
+                    is CatalogUpdatePayload.Episodes -> {
+                        syncEpisodes(hit.titleId, payload.remoteId, preserveWatched = true)
+                    }
+                    is CatalogUpdatePayload.MovieSequels -> {
+                        applyMovieSequelHit(hit.titleId, payload)
+                    }
+                    is CatalogUpdatePayload.GameDlcs -> {
+                        syncDlcs(
+                            hit.titleId,
+                            payload.remoteId,
+                            preserveCompleted = true,
+                            remoteOverride = payload.dlcs
+                        )
+                    }
+                    is CatalogUpdatePayload.BookSequels -> {
+                        payload.books.forEach { addToLibrary(MediaType.BOOK, it) }
+                    }
+                }
+            }.onSuccess { updated++ }
+        }
+        persistOverview(type)
+        if (type == MediaType.MOVIE) reconcileMovieFranchises()
+        return updated
+    }
+
+    suspend fun seedStaleCatalogCheckExamples() {
+        if (prefs.isCatalogCheckFixturesSeeded()) return
+        insertStaleShow(
+            type = MediaType.SERIES,
+            remoteId = "169",
+            title = "Breaking Bad",
+            year = 2008,
+            catalogUrl = "https://www.tvmaze.com/shows/169/breaking-bad",
+            seasonCount = 4,
+            episodesPerSeason = 7
+        )
+        insertStaleShow(
+            type = MediaType.SERIES,
+            remoteId = "2993",
+            title = "Stranger Things",
+            year = 2016,
+            catalogUrl = "https://www.tvmaze.com/shows/2993/stranger-things",
+            seasonCount = 1,
+            episodesPerSeason = 8
+        )
+        insertStaleShow(
+            type = MediaType.ANIME,
+            remoteId = "220",
+            title = "Cowboy Bebop",
+            year = 1998,
+            catalogUrl = "https://www.tvmaze.com/shows/220/cowboy-bebop",
+            seasonCount = 1,
+            episodesPerSeason = 5
+        )
+        if (titles.getByRemote(MediaType.MOVIE.name, "603") == null) {
+            titles.insert(
+                TitleEntity(
+                    mediaType = MediaType.MOVIE.name,
+                    remoteId = "603",
+                    title = "The Matrix",
+                    year = 1999,
+                    catalogUrl = "https://www.themoviedb.org/movie/603",
+                    firstDate = "1999-03-31",
+                    runtimeMinutes = 136,
+                    totalUnits = 1,
+                    totalMinutes = 136
+                )
+            )
+        }
+        if (titles.getByRemote(MediaType.GAME.name, "the-witcher-3-wild-hunt") == null) {
+            titles.insert(
+                TitleEntity(
+                    mediaType = MediaType.GAME.name,
+                    remoteId = "the-witcher-3-wild-hunt",
+                    title = "The Witcher 3: Wild Hunt",
+                    year = 2015,
+                    catalogUrl = "https://rawg.io/games/the-witcher-3-wild-hunt"
+                )
+            )
+        }
+        if (titles.getByRemote(MediaType.BOOK.name, "OL82563W") == null) {
+            titles.insert(
+                TitleEntity(
+                    mediaType = MediaType.BOOK.name,
+                    remoteId = "OL82563W",
+                    title = "Harry Potter and the Philosopher's Stone",
+                    year = 1997,
+                    seriesName = "Harry Potter",
+                    catalogUrl = "https://openlibrary.org/works/OL82563W",
+                    pageCount = 223,
+                    totalUnits = 223
+                )
+            )
+        }
+        prefs.setCatalogCheckFixturesSeeded()
+    }
+
+    private suspend fun insertStaleShow(
+        type: MediaType,
+        remoteId: String,
+        title: String,
+        year: Int,
+        catalogUrl: String,
+        seasonCount: Int,
+        episodesPerSeason: Int
+    ) {
+        if (titles.getByRemote(type.name, remoteId) != null) return
+        val id = titles.insert(
+            TitleEntity(
+                mediaType = type.name,
+                remoteId = remoteId,
+                title = title,
+                year = year,
+                catalogUrl = catalogUrl,
+                runtimeMinutes = if (type == MediaType.ANIME) 24 else 45,
+                totalUnits = seasonCount * episodesPerSeason
+            )
+        )
+        seasons.insertAll(
+            (1..seasonCount).map { number ->
+                SeasonEntity(
+                    titleId = id,
+                    seasonNumber = number,
+                    episodeCount = episodesPerSeason,
+                    startDate = null,
+                    endDate = null
+                )
+            }
+        )
+        episodes.insertAll(
+            (1..seasonCount).flatMap { season ->
+                (1..episodesPerSeason).map { ep ->
+                    EpisodeEntity(
+                        titleId = id,
+                        seasonNumber = season,
+                        episodeNumber = ep,
+                        airDate = null,
+                        watched = false,
+                        runtimeMinutes = if (type == MediaType.ANIME) 24 else 45
+                    )
+                }
+            }
+        )
+    }
+
+    private suspend fun probeEpisodeGrowth(
+        title: TitleEntity,
+        type: MediaType
+    ): CatalogUpdateHit? {
+        val provider = catalog.providerForListing(type, title.catalogUrl)
+        val remote = catalog.seasonCounts(type, title.remoteId, provider)
+        if (remote.isEmpty()) return null
+        val localSeasons = seasons.forTitle(title.id)
+        val localEpisodes = episodes.forTitle(title.id).groupBy { it.seasonNumber }
+        val localCounts = localSeasons.associate { season ->
+            val stored = localEpisodes[season.seasonNumber]?.size ?: 0
+            season.seasonNumber to maxOf(season.episodeCount, stored)
+        }.toMutableMap()
+        localEpisodes.forEach { (number, rows) ->
+            if (number !in localCounts) localCounts[number] = rows.size
+        }
+        val newSeasons = remote.filter { it.seasonNumber !in localCounts }
+        val grown = remote.mapNotNull { season ->
+            val local = localCounts[season.seasonNumber] ?: return@mapNotNull null
+            if (season.episodeCount > local) season.episodeCount - local else null
+        }
+        if (newSeasons.isEmpty() && grown.isEmpty()) return null
+        val extra = grown.sum()
+        val detail = buildString {
+            when {
+                newSeasons.size == 1 -> append("Season ${newSeasons.first().seasonNumber}")
+                newSeasons.size > 1 -> {
+                    val numbers = newSeasons.map { it.seasonNumber }.sorted()
+                    append("Seasons ${numbers.first()}–${numbers.last()}")
+                }
+            }
+            if (extra > 0) {
+                if (isNotEmpty()) append(" · ")
+                append("+$extra episodes")
+            }
+        }
+        return CatalogUpdateHit(
+            titleId = title.id,
+            title = title.displayName,
+            detail = detail.ifBlank { "New episodes" },
+            payload = CatalogUpdatePayload.Episodes(title.remoteId, type)
+        )
+    }
+
+    private suspend fun probeMovieSequels(
+        title: TitleEntity,
+        libraryMovieIds: Set<String>,
+        seenCollections: MutableSet<String>
+    ): CatalogUpdateHit? {
+        var collectionId = title.collectionId?.takeIf { it.isNotBlank() }
+        var details: RemoteTitle? = null
+        if (collectionId == null) {
+            details = catalog.details(MediaType.MOVIE, title.remoteId)
+            collectionId = details.collectionId?.takeIf { it.isNotBlank() } ?: return null
+        }
+        if (!seenCollections.add(collectionId)) return null
+        val parts = catalog.movieCollectionParts(collectionId)
+        val relatedIds = related.forOwner(MediaType.MOVIE.name, title.remoteId)
+            .map { it.relatedRemoteId }
+            .toSet()
+        val newcomers = parts.filter { part ->
+            part.remoteId != title.remoteId &&
+                part.remoteId !in relatedIds &&
+                part.remoteId !in libraryMovieIds
+        }
+        if (newcomers.isEmpty()) return null
+        val names = newcomers.map { it.title }.filter { it.isNotBlank() }
+        return CatalogUpdateHit(
+            titleId = title.id,
+            title = title.displayName,
+            detail = names.take(3).joinToString(", ").ifBlank { "${newcomers.size} new sequels" },
+            payload = CatalogUpdatePayload.MovieSequels(
+                remoteId = title.remoteId,
+                collectionId = collectionId,
+                details = details ?: title.toRemote().copy(collectionId = collectionId)
+            )
+        )
+    }
+
+    private suspend fun probeNewDlcs(title: TitleEntity): CatalogUpdateHit? {
+        val remote = catalog.dlcs(title.remoteId)
+        if (remote.isEmpty()) return null
+        val localIds = dlcs.forTitle(title.id).map { it.remoteId }.toSet()
+        val newcomers = remote.filter { it.remoteId !in localIds }
+        if (newcomers.isEmpty()) return null
+        val names = newcomers.map { it.name }.filter { it.isNotBlank() }
+        return CatalogUpdateHit(
+            titleId = title.id,
+            title = title.displayName,
+            detail = names.take(3).joinToString(", ").ifBlank { "${newcomers.size} new DLC" },
+            payload = CatalogUpdatePayload.GameDlcs(title.remoteId, remote)
+        )
+    }
+
+    private suspend fun probeBookSequels(
+        title: TitleEntity,
+        libraryBookIds: Set<String>
+    ): CatalogUpdateHit? {
+        val siblings = catalog.bookSeriesSiblings(title.toRemote())
+            .filter { it.remoteId !in libraryBookIds }
+        if (siblings.isEmpty()) return null
+        val names = siblings.map { it.title }.filter { it.isNotBlank() }
+        return CatalogUpdateHit(
+            titleId = title.id,
+            title = title.displayName,
+            detail = names.take(3).joinToString(", ").ifBlank { "${siblings.size} sequels" },
+            payload = CatalogUpdatePayload.BookSequels(siblings)
+        )
+    }
+
+    private suspend fun applyMovieSequelHit(titleId: Long, payload: CatalogUpdatePayload.MovieSequels) {
+        val owner = titles.getById(titleId) ?: return
+        val detailed = payload.details?.copy(
+            remoteId = owner.remoteId,
+            collectionId = payload.collectionId
+        ) ?: owner.toRemote().copy(collectionId = payload.collectionId)
+        titles.update(
+            owner.copy(
+                collectionId = payload.collectionId,
+                collectionName = detailed.collectionName ?: owner.collectionName,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+        persistMovieFranchise(detailed)
     }
 
     suspend fun addToLibrary(type: MediaType, remote: RemoteTitle): Long {
@@ -1699,7 +2018,13 @@ class LibraryRepository @Inject constructor(
         val fallback = title?.runtimeMinutes?.takeIf { it > 0 } ?: 45
         val mediaType = title?.mediaType?.let { runCatching { MediaType.valueOf(it) }.getOrNull() }
             ?: MediaType.SERIES
-        val (remoteSeasons, remoteEpisodes) = catalog.seasonsAndEpisodes(mediaType, remoteId, fallback)
+        val provider = catalog.providerForListing(mediaType, title?.catalogUrl)
+        val (remoteSeasons, remoteEpisodes) = catalog.seasonsAndEpisodes(
+            mediaType,
+            remoteId,
+            fallback,
+            provider
+        )
         val previous = if (preserveWatched) {
             episodes.forTitle(titleId).associate { (it.seasonNumber to it.episodeNumber) to it.watched }
         } else emptyMap()
@@ -1772,8 +2097,13 @@ class LibraryRepository @Inject constructor(
         )
     }
 
-    private suspend fun syncDlcs(titleId: Long, remoteId: String, preserveCompleted: Boolean) {
-        val remote = runCatching { catalog.dlcs(remoteId) }.getOrDefault(emptyList())
+    private suspend fun syncDlcs(
+        titleId: Long,
+        remoteId: String,
+        preserveCompleted: Boolean,
+        remoteOverride: List<RemoteDlc>? = null
+    ) {
+        val remote = remoteOverride ?: runCatching { catalog.dlcs(remoteId) }.getOrDefault(emptyList())
         if (remote.isEmpty()) {
             dlcs.deleteForTitle(titleId)
             persistDlcProgress(titleId)
@@ -2579,6 +2909,24 @@ data class OverviewStats(
 )
 
 data class RefreshProgress(val current: Int, val total: Int, val label: String = "Refreshing")
+
+data class CatalogUpdateHit(
+    val titleId: Long,
+    val title: String,
+    val detail: String,
+    val payload: CatalogUpdatePayload
+)
+
+sealed class CatalogUpdatePayload {
+    data class Episodes(val remoteId: String, val mediaType: MediaType) : CatalogUpdatePayload()
+    data class MovieSequels(
+        val remoteId: String,
+        val collectionId: String,
+        val details: RemoteTitle?
+    ) : CatalogUpdatePayload()
+    data class GameDlcs(val remoteId: String, val dlcs: List<RemoteDlc>) : CatalogUpdatePayload()
+    data class BookSequels(val books: List<RemoteTitle>) : CatalogUpdatePayload()
+}
 
 data class RefreshResult(val showsUpdated: Int, val reopened: Int)
 

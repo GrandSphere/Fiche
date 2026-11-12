@@ -3,6 +3,8 @@ package com.grandsphere.fiche.data.repository
 import com.google.gson.JsonParser
 import com.grandsphere.fiche.data.catalog.CatalogProviderId
 import com.grandsphere.fiche.data.catalog.CatalogRouter
+import com.grandsphere.fiche.util.catalogListingFamily
+import com.grandsphere.fiche.util.catalogProviderFromUrl
 import com.grandsphere.fiche.data.catalog.anime.JikanAnimeCatalog
 import com.grandsphere.fiche.data.catalog.games.RawgGamesCatalog
 import com.grandsphere.fiche.data.catalog.isAnime
@@ -19,7 +21,6 @@ import com.grandsphere.fiche.data.remote.tvmaze.TvMazeApi
 import com.grandsphere.fiche.domain.model.DiscoverFilter
 import com.grandsphere.fiche.domain.model.MediaType
 import com.grandsphere.fiche.util.CatalogLinkParser
-import com.grandsphere.fiche.util.catalogProviderFromUrl
 import com.grandsphere.fiche.util.defaultCatalogProvider
 import com.grandsphere.fiche.util.remoteWebUrl
 import com.grandsphere.fiche.util.yearFromDate
@@ -53,7 +54,27 @@ class CatalogRepository @Inject constructor(
     }
 
     suspend fun details(type: MediaType, remoteId: String): RemoteTitle =
-        router.forType(type).details(remoteId)
+        details(type, remoteId, providerIdFor(type))
+
+    suspend fun details(
+        type: MediaType,
+        remoteId: String,
+        provider: CatalogProviderId
+    ): RemoteTitle = catalogFor(type, provider).details(remoteId)
+
+    /** Catalogue this listing actually lives on, not the current Settings default. */
+    suspend fun providerForListing(type: MediaType, catalogUrl: String?): CatalogProviderId {
+        val fromUrl = catalogProviderFromUrl(catalogUrl) ?: return providerIdFor(type)
+        if (type == MediaType.ANIME && catalogListingFamily(fromUrl) == CatalogProviderId.MAL) {
+            val current = providerIdFor(type)
+            return if (current == CatalogProviderId.MAL || current == CatalogProviderId.JIKAN) {
+                current
+            } else {
+                CatalogProviderId.JIKAN
+            }
+        }
+        return fromUrl
+    }
 
     suspend fun seasonsAndEpisodes(
         remoteId: String,
@@ -64,12 +85,37 @@ class CatalogRepository @Inject constructor(
     suspend fun seasonsAndEpisodes(
         type: MediaType,
         remoteId: String,
-        fallbackRuntime: Int = 45
+        fallbackRuntime: Int = 45,
+        provider: CatalogProviderId? = null
     ): Pair<List<RemoteSeason>, List<RemoteEpisode>> {
+        val id = provider ?: providerIdFor(type)
         return when (type) {
-            MediaType.ANIME -> router.anime().seasonsAndEpisodes(remoteId, fallbackRuntime)
-            else -> router.series().seasonsAndEpisodes(remoteId, fallbackRuntime)
+            MediaType.ANIME -> router.animeCatalog(id).seasonsAndEpisodes(remoteId, fallbackRuntime)
+            else -> router.seriesCatalog(id).seasonsAndEpisodes(remoteId, fallbackRuntime)
         }
+    }
+
+    suspend fun seasonCounts(
+        type: MediaType,
+        remoteId: String,
+        provider: CatalogProviderId
+    ): List<RemoteSeason> = when (type) {
+        MediaType.ANIME -> router.animeCatalog(provider).seasonCounts(remoteId)
+        else -> router.seriesCatalog(provider).seasonCounts(remoteId)
+    }
+
+    suspend fun bookSeriesSiblings(title: RemoteTitle): List<RemoteTitle> =
+        router.books().seriesSiblings(title)
+
+    private suspend fun catalogFor(
+        type: MediaType,
+        provider: CatalogProviderId
+    ): com.grandsphere.fiche.data.catalog.MediaCatalogProvider = when (type) {
+        MediaType.SERIES -> router.seriesCatalog(provider)
+        MediaType.ANIME -> router.animeCatalog(provider)
+        MediaType.MOVIE -> router.movies()
+        MediaType.GAME -> router.games()
+        MediaType.BOOK -> router.books()
     }
 
     suspend fun movieCollectionParts(collectionId: String): List<RemoteRelated> =

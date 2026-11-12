@@ -57,6 +57,7 @@ class UserPreferencesRepository @Inject constructor(
     private val sequelMigrationDoneKey = booleanPreferencesKey("sequel_hidden_migration_done")
     private val trackedStatsMigrationDoneKey = booleanPreferencesKey("tracked_stats_migration_done")
     private val jikanMalSplitDoneKey = booleanPreferencesKey("jikan_mal_split_done")
+    private val catalogCheckFixturesSeededKey = booleanPreferencesKey("catalog_check_fixtures_seeded")
 
     val themeMode: Flow<ThemeMode> = context.dataStore.data.map { prefs ->
         runCatching { ThemeMode.valueOf(prefs[themeKey] ?: ThemeMode.SYSTEM.name) }
@@ -137,6 +138,13 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setJikanMalSplitDone() {
         context.dataStore.edit { it[jikanMalSplitDoneKey] = true }
+    }
+
+    suspend fun isCatalogCheckFixturesSeeded(): Boolean =
+        context.dataStore.data.map { it[catalogCheckFixturesSeededKey] ?: false }.first()
+
+    suspend fun setCatalogCheckFixturesSeeded() {
+        context.dataStore.edit { it[catalogCheckFixturesSeededKey] = true }
     }
 
     suspend fun setMediaTypeEnabled(type: MediaType, enabled: Boolean) {

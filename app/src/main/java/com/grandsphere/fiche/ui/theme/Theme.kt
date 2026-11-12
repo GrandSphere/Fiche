@@ -74,6 +74,11 @@ fun FicheTheme(
             surface = background,
             onSurface = onBg,
             surfaceVariant = group,
+            surfaceContainer = background,
+            surfaceContainerLow = background,
+            surfaceContainerLowest = background,
+            surfaceContainerHigh = background,
+            surfaceContainerHighest = background,
             error = Color(0xFFB42318)
         )
     }

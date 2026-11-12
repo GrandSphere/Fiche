@@ -11,6 +11,13 @@ enum class MediaType(val label: String, val libraryLabel: String) {
 
     val tracksEpisodes: Boolean get() = this == SERIES || this == ANIME
 
+    val checkUpdatesLabel: String
+        get() = when (this) {
+            SERIES, ANIME -> "Check new episodes"
+            MOVIE, BOOK -> "Check sequels"
+            GAME -> "Check new DLC"
+        }
+
     fun next(among: List<MediaType> = entries): MediaType? {
         val list = among.ifEmpty { entries }
         val index = list.indexOf(this)

@@ -21,6 +21,8 @@ interface BooksCatalog : MediaCatalogProvider {
     ): DiscoverPage
 
     suspend fun workIdFromEdition(editionId: String): String?
+
+    suspend fun seriesSiblings(title: RemoteTitle): List<RemoteTitle>
 }
 
 class OpenLibraryBooksCatalog(
@@ -86,5 +88,16 @@ class OpenLibraryBooksCatalog(
     override suspend fun workIdFromEdition(editionId: String): String? {
         val edition = runCatching { openLibrary.edition(editionId) }.getOrNull() ?: return null
         return edition.works.orEmpty().firstNotNullOfOrNull { workIdFromKey(it.key).ifBlank { null } }
+    }
+
+    override suspend fun seriesSiblings(title: RemoteTitle): List<RemoteTitle> {
+        val series = title.seriesName?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val ownerYear = title.year
+        return search(series).filter { hit ->
+            if (hit.remoteId == title.remoteId) return@filter false
+            if (!hit.title.startsWith(series, ignoreCase = true)) return@filter false
+            val year = hit.year
+            year == null || ownerYear == null || year >= ownerYear
+        }
     }
 }

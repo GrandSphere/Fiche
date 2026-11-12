@@ -48,19 +48,21 @@ class CatalogRouter(
         }
     }
 
-    suspend fun series(): SeriesCatalog = when (providerIdFor(MediaType.SERIES)) {
-        CatalogProviderId.TMDB -> tmdbSeries
-        else -> tvMazeSeries
-    }
+    fun seriesCatalog(id: CatalogProviderId): SeriesCatalog =
+        if (id == CatalogProviderId.TMDB) tmdbSeries else tvMazeSeries
 
-    suspend fun movies(): MoviesCatalog = tmdbMovies
-
-    suspend fun anime(): AnimeCatalog = when (providerIdFor(MediaType.ANIME)) {
+    fun animeCatalog(id: CatalogProviderId): AnimeCatalog = when (id) {
         CatalogProviderId.TMDB -> tmdbAnime
         CatalogProviderId.MAL -> malAnime
         CatalogProviderId.JIKAN -> jikanAnime
         else -> tvMazeAnime
     }
+
+    suspend fun series(): SeriesCatalog = seriesCatalog(providerIdFor(MediaType.SERIES))
+
+    suspend fun movies(): MoviesCatalog = tmdbMovies
+
+    suspend fun anime(): AnimeCatalog = animeCatalog(providerIdFor(MediaType.ANIME))
 
     suspend fun games(): GamesCatalog = rawgGames
 

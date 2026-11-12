@@ -24,8 +24,8 @@ android {
         applicationId = "com.grandsphere.fiche"
         minSdk = 26
         targetSdk = 36
-        versionCode = 44
-        versionName = "0.144"
+        versionCode = 45
+        versionName = "0.145"
         vectorDrawables.useSupportLibrary = true
     }
 
